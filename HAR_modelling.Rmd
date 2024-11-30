@@ -1,0 +1,338 @@
+---
+title: "Human-Activity-Recognition Modelling"
+author: "spemurphy"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Introduction
+
+The aim of this analysis is to attempt to build a machine learning model that is able to predict how well someone performs an exercise based on the information provided by their human-activity-recognition monitoring device (fitness wearable). The project begins with loading and processing the data to then explore and understand the class of exercise performance themself and the different types of wearables available, as well as their relationships to eachother. Finally, models are chosen, trained and then tested on multiple occassions to understand the nuances of model performance and accuracy, and how robust they are on unseen data. 
+
+# Data Loading
+
+## Loading data
+```{r, echo=TRUE}
+getwd()
+if (!file.exists("data")){dir.create("data")}
+trainUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(trainUrl, destfile="./data/train.csv", method="curl")
+download.file(testUrl, destfile="./data/test.csv", method="curl")
+list.files("./data")
+dateDownloaded <- date()
+dateDownloaded
+```
+
+## Reading data and loading libraries
+```{r, echo=TRUE, results='hide'}
+library(ggplot2)
+library(readr)
+library(caret)
+library(Hmisc)
+library(e1071)
+library(dplyr)
+library(Metrics)
+library(patchwork)
+trainData <- read.csv("./data/train.csv")
+testData <- read.csv("./data/test.csv")
+head(trainData)
+```
+
+```{r}
+levels(trainData$classe)
+trainData$classe <- as.factor(trainData$classe)
+dim(trainData) #19622, 160
+
+table(trainData$classe) #data is imbalanced toward classe A and slightly more for classe B
+
+#Fixing imbalance
+set.seed(123)
+#Imbalance ratio
+imbalanceRatio <- table(trainData$classe)["A"] / mean(table(trainData$classe)[c("B", "C", "D", "E")])
+imbalanceRatio
+class_weights <- c(
+  "A" = 1.589517,  # This class is 1.589517 times larger than the average
+  "B" = 1,         # Set weight of 1 for the average classes
+  "C" = 1,
+  "D" = 1,
+  "E" = 1
+)
+```
+
+## Data Splitting
+Data is split into train set to build the model, and two subsequent validation and test sets to understand model performance and test accuracy.
+```{r, echo=TRUE}
+inBuild <- createDataPartition(y=trainData$classe,
+                               p=0.7, list=FALSE)
+validation <- trainData[-inBuild, ]; buildData <- trainData[inBuild,]
+
+inTrain <- createDataPartition(y=buildData$classe,
+                               p=0.7, list=FALSE)
+training <- buildData[inTrain, ]; testing <- buildData[-inTrain, ]
+
+dim(training) # 9619, 160
+dim(testing) # 4118, 160
+dim(validation) # 5885, 160
+```
+
+# Exploratory Data Analysis
+
+## BELT
+```{r echo=TRUE, warning=FALSE}
+p2 <- qplot(classe, roll_belt, data=training,
+            geom=c("boxplot"))
+p3 <- qplot(classe, pitch_belt, data=training,
+            geom=c("boxplot"))
+p4 <- qplot(classe, yaw_belt, data=training,
+            geom=c("boxplot"))
+p5 <- qplot(classe, total_accel_belt, data=training,
+            geom=c("boxplot"))
+(p2 | p3) / (p4 | p5) 
+```
+
+For pitch_belt, the medians of classe A:E appear around zero. However, roll_belt, yaw_belt and total_accelt_belt medians increase as movement form goes from classe A to classe E. This indicates that as roll_belt, yaw_belt and total_accel_belt increase, movement form decreases, except for classe D, which may be an outlier. 
+
+## ARM
+```{r, echo=TRUE}
+a1 <- qplot(classe, roll_arm, data=training,
+            geom=c("boxplot"))
+a2 <- qplot(classe, pitch_arm, data=training,
+            geom=c("boxplot"))
+a3 <- qplot(classe, yaw_arm, data=training,
+            geom=c("boxplot"))
+a4 <- qplot(classe, total_accel_arm, data=training,
+            geom=c("boxplot"))
+(a1 | a2) / (a3 | a4)
+```
+
+Three of the four charts above highlight differences between classe: A and the remaining classes. Pitch_arm and total_accel_arm show slight differences between levels for classe: A to classe: E, where this is a small downward trend. This suggests that there when these numbers are lower, exercise performance decreases. 
+
+##FOREARM
+```{r, echo=TRUE}
+f1 <- qplot(classe, roll_forearm, data=training,
+            geom=c("boxplot"))
+f2 <- qplot(classe, pitch_forearm, data=training,
+            geom=c("boxplot"))
+f3 <- qplot(classe, yaw_forearm, data=training,
+            geom=c("boxplot"))
+f4 <- qplot(classe, total_accel_forearm, data=training,
+            geom=c("boxplot"))
+(f1 | f2) / (f3 | f4)
+```
+
+Again, pitch_forearm highlights a small upward trend from classe: A to classe: E, indicating that exercise worsens as pitch_forearm increases. Total_accel_forearm on the other hand shows differences between the classes, if only slight, that classe: B to classe: E are different from classe: A. 
+
+##DUMBELL
+```{r, echo=TRUE}
+d1 <- qplot(classe, roll_dumbbell, data=training,
+            geom=c("boxplot"))
+d2 <- qplot(classe, pitch_dumbbell, data=training,
+            geom=c("boxplot"))
+d3 <- qplot(classe, yaw_dumbbell, data=training,
+            geom=c("boxplot"))
+d4 <- qplot(classe, total_accel_dumbbell, data=training,
+            geom=c("boxplot"))
+(d1 | d2) / (d3 | d4)
+```
+
+There is no discernible trend or pattern when looking at the dumbbell itself. The classe A shares a median with a different classe in nearly every graph, for example classe A and classe C have a median slightly below 0 for pitch_dumbbell and in yaw_dumbbell where, classe A and classe E are around equal at slightly below 0. 
+
+## EDA Conclusion
+
+The EDA phase has highlighted that there are certain variables that differ drastically between classe A : classe E. As well as this, there are an extremely large amount of potential predictors (159) and reducing them to what are actually important will be essential for model performance and computational complexity. Pre-processing will be an important step for the modelling phase. 
+
+# Preprocessing
+```{r, echo=TRUE}
+## NSV
+nsv <- nearZeroVar(training)
+nsvTraining <- training[, -nsv]
+
+
+## Median Impute
+preProc <- preProcess(nsvTraining, method="medianImpute")
+miTraining <- predict(preProc, nsvTraining)
+
+dim(miTraining) # Removed 51 variables
+```
+
+Variables with near zero variance were removed to decrease total variable count and to remove any variables that wont meaningful contribute to prediction. Median impute was used as certain variables contained a large number of NAs while only having a small amount of actual observations, and to improve this a median was imputed to maintain potentially valuable data. 
+
+Below, the kNN and SVM models were also use principal component analysis to pre-process the data, while the classification tree uses center and scale to pre-process the data. Furthermore, the data is imbalanced in favour of classe: A, and therefore weighting and cross-validation was used in each model to offset the imbalance and improve model accuracy respectively.
+
+## K-nearest neighbour model with principal component analysis
+```{r, echo=TRUE}
+# Assign the appropriate weight to each row based on its class
+weights_vector_train <- class_weights[as.character(miTraining$classe)]
+
+# Check if the length of weights_vector matches the number of rows in miTraining
+length(weights_vector_train) 
+
+set.seed(123)
+#Knn with principal component analysis 
+knnFit <- train(classe~., 
+                data=miTraining, 
+                method="knn", 
+                preProcess=c("pca"),
+                trControl=trainControl(method="cv"),
+                weights= weights_vector_train,
+                tuneLength=10
+                )
+print(knnFit)
+```
+The best model used k=5, balancing bias and variance effectively. Model began over-smoothing, as can be seen by decreased accuracy as k increases. Model k=5 had an accuracy of 0.9540 and a Kappa of 0.9417, which indicates that the model is highly accurate beyond chance.
+
+## Performance metrics
+```{r, echo=TRUE}
+confusionMatrix(knnFit)
+knnMatrix <- as.table(matrix(c(28.2,  0.3,  0.1,  0.0,  0.0,
+ 0.1, 18.5,  0.2,  0.0,  0.1,
+ 0.1,  0.4, 17.0,  0.3,  0.0,
+ 0.0,  0.0,  0.1, 16.0,  0.1,
+ 0.0,  0.0,  0.0,  0.1, 18.2), nrow=5, byrow=TRUE))
+knnPrecision <- diag(knnMatrix) / rowSums(knnMatrix)
+knnRecall <- diag(knnMatrix) / colSums(knnMatrix)
+knnF1 <- 2 * (knnPrecision * knnRecall) / (knnPrecision + knnRecall)
+
+knnResults <- data.frame(knnPrecision, knnRecall, knnF1)
+print(knnResults)
+```
+The model using K-nearest neighbour with principal component analysis pre-processing appears to identify most posititve cases and of those predicted positives, the majority are correct. The high F1 scores also demonstrate balanced performance between precision and recall, indicating that this is an accurate classifier of the different types of classes in the data.
+
+## Classification Tree Model
+```{r, echo=TRUE}
+classFit <- train(classe ~ ., 
+                  method="rpart", 
+                  data=miTraining,
+                  preProc=c("center", "scale"),
+                  trControl=trainControl(method="cv"),
+                  weights=weights_vector_train
+                  )
+print(classFit)
+```
+A classification tree was a less accurate predictor of exercise performance compared the k-Nearest Neighbour model. The best model was 0.7135 or 71.35% accurate. The complexity parameter was best at 0.2438, meaning this is where the model best balanced its accuracy while maintaining simplicity. The best model's kappa was 0.6356, meaning that the model has substantial agreement between accurate predicted and actual observations while accounting for agreement by chance. 
+
+## Performance metrics
+```{r, echo=TRUE}
+confusionMatrix(classFit)
+classMatrix <- as.table(matrix(c(28.4,  0.0,  0.0,  0.0,  0.0,
+          0.0, 19.4,  0.0,  0.0 , 0.0,
+          0.0 , 0.0, 10.5,  9.8 , 0.0,
+          0.0,  0.0,  0.0,  0.0 , 0.0,
+          0.0,  0.0,  7.0,  6.5,  18.4), nrow=5, byrow=TRUE))
+classPrecision <- diag(classMatrix) / rowSums(classMatrix)
+classRecall <- diag(classMatrix) / colSums(classMatrix)
+classF1 <- 2 * (classPrecision * classRecall) / (classPrecision + classRecall)
+
+classResults <- data.frame(classPrecision, classRecall, classF1)
+print(classResults)
+```
+The classification again shows worrying signs when we look at precision, recall and the F1 score. The model performs well in identifying most positive cases for classe A and classe B. However, for classe C, classe D and E, the model appears to predict poorly the relevant data points and only those points for classe C, while for classe E, the model can accurately identify all data points relevant to the class, this is likely due to a high number of classifications of classe D as it has a low precision score. 
+
+
+## Support Vector Machine Model
+```{r, echo=TRUE}
+svmFit <- train(classe~., 
+              data=miTraining, 
+              method="svmRadial",
+              preProcess=c("pca"),
+              trControl=trainControl(method="cv"),
+              weights=weights_vector_train,
+              tuneLength=10
+              )
+print(svmFit)
+```
+
+```{r, echo=TRUE}
+confusionMatrix(svmFit)
+svmMatrix <- as.table(matrix(c(28.3,  0.0,  0.0,  0.0,  0.0,
+         0.0, 19.1,  0.0,  0.0,  0.0,
+         0.0,  0.0, 17.3,  0.0,  0.0,
+         0.0,  0.0,  0.0, 16.2,  0.0,
+         0.1,  0.2, 0.1,  0.1, 18.3), nrow=5, byrow=TRUE))
+svmPrecision <- diag(svmMatrix) / rowSums(svmMatrix)
+svmRecall <- diag(svmMatrix) / colSums(svmMatrix)
+svmF1 <- 2 * (svmPrecision * svmRecall) / (svmPrecision + svmRecall)
+
+svmResults <- data.frame(svmPrecision, svmRecall, svmF1)
+print(svmResults)
+```
+
+The SVM model appears to be the most accurate predictor of each individual class with the highest accuracy score (when c=128) at 0.9871 and with perfect precision for for classe A : classe D, and a very high precision score for class E. The F1 scores are also nearly 100% accurate for every classe. 
+
+The SVM model outperforms the kNN model on every metric, and more importantly when comparing something like the F1 score, the SVM more accurately identified classe A, classe B, classe C and classe D. The only classe that kNN performed better on is classe E, but only marginally. 
+However, the two models (kNN and SVM) can now be tested on the validation dataset. Then, the best model will be tested against the test dataset to understand its performance further on unseen data.
+
+# Model Validation
+
+## Preprocessing
+```{r, echo=TRUE}
+dim(validation)
+validation$classe <- as.factor(validation$classe)
+nsvVal <- nearZeroVar(validation)
+nsvValData <- validation[, -nsvVal]
+preProcVal <- preProcess(nsvValData, method="medianImpute")
+miValData <- predict(preProcVal, nsvValData)
+dim(miValData) # 48 variables removed
+```
+
+```{r, echo=TRUE}
+apa <- na.omit(validation$amplitude_pitch_arm)
+mapa <- median(apa)
+miValData$amplitude_pitch_arm <- rep(mapa, 5885)
+dim(miValData)
+```
+*When model was initially run, there was an error regarding a missing variable. This variable was removed during pre-processing but as both models had been trained with it included, it was re-added using a Median Impute.* 
+
+## Validation on the two best models
+
+```{r, echo=TRUE}
+pred1 <- predict(knnFit, miValData) ; pred2 <- predict(svmFit, miValData)
+## object 'amplitude_pitch_arm' not found: Corrected above
+model1 <- confusionMatrix(pred1, miValData$classe)
+model2 <- confusionMatrix(pred2, miValData$classe)
+
+model1$overall[c("Accuracy", "Kappa")] ## kNN Model
+
+model2$overall[c("Accuracy", "Kappa")] ## SVM model
+
+difference_between_models <- model1$byClass - model2$byClass
+difference_between_models[, c("Sensitivity", "Specificity", "Precision", "F1")] 
+```
+
+Both models being run on the validation dataset highlights a consistent out-performance by the SVM in terms of model accuracy when compared to the kNN model. The SVM model is only slightly better (2.05% more accurate) but also significantly outperforms the kNN model on other performance metrics: Sensitivity, Specificity, Precision and F1 score, with SVM performing better on 16 out of 20 metrics. 
+
+# Preprocessing
+
+```{r, echo=TRUE}
+dim(testing)
+testing$classe <- as.factor(testing$classe)
+nsvTest <- nearZeroVar(testing)
+nsvTestData <- testing[, -nsvTest]
+preProcTest <- preProcess(nsvTestData, method="medianImpute")
+miTestData <- predict(preProcTest, nsvTestData)
+dim(miTestData) # 34 variables removed this time
+```
+
+
+```{r, echo=TRUE}
+predTest <- predict(svmFit, miTestData)
+testModel <- confusionMatrix(predTest, miTestData$classe)
+testModel
+```
+However, when the SVM model is tested on even more unseen data, the model's accuracy drops off massively. The accuracy is now between 84.94% and 87.08%. Moreover, the model is also a poor predictor of Class: B and Class: D, highlighted by its poor sensitivity score for both classes. 
+
+```{r, echo=TRUE}
+predTestkNN <- predict(knnFit, miTestData)
+testModelkNN <- confusionMatrix(predTestkNN, miTestData$classe)
+testModelkNN
+```
+As shown above, the kNN model is a more accurate predictor overall when comparing the two models across three different sets of data (1 training, 2 testing). The kNN consistently predicted between 95.19% and 96.44% of the cases of each individual class across the three tests. What is particular impressive is its performance on unseen data, where the SVM model performed less consistently. 
+The precision and specificity comparison between the kNN and SVM further highlight the superior performance of the kNN model, with no sensitivity score below 0.9310 and a specificity score of 0.9806 or greater for each individual class.
+
+Models were built with the issue of classification of categories in mind, this is why the kNN, Classification Tree and SVM models were chosen. Each model was chosen for different reasons, for example the SVM works well with high dimensional data, and as there were 159 variables to predict from and 19622 observations, this seemed like a good fit. In retrospect, the Classification Tree was a poor decision for the purposes of this data as it was far from a simple structure. My choice to use this model was more so driven by the interprability of the tree itself. Finally, the kNN model was my first choice due to 1. its simplicity and 2. because of the exploratory data analysis. From the 4 comparisons looked at during EDA, it was clear that different measurements grouped together quite clearly, and from my understanding of kNN this seemed like a good fit. 
+
+In conclusion, the kNN model is a more accurate predictor of the 'Classe' variable than the SVM model and the Classification Tree model, correctly predicting between 95.19% and 96.44% of the cases 95% of the time. 
